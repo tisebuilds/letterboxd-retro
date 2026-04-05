@@ -1,0 +1,318 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #111;
+  --polaroid: #ffffff;
+}
+
+body {
+  background: var(--bg);
+  color: #e8e8e8;
+}
+
+/* Subtle film grain overlay (fixed layer; low opacity so it stays tactile, not noisy). */
+.film-grain {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+}
+.film-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.055;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+
+/* Subtle mount-in when slots enter the canvas (pan / cull). Wrapper keeps card hover transforms clean. */
+@keyframes polaroid-slot-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 5px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.polaroid-slot-enter {
+  animation: polaroid-slot-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .polaroid-slot-enter {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Inner wrapper: 3D burst lives here so toggling it does not re-run polaroid-slot-in on the outer slot. */
+.polaroid-burst-layer {
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-style: preserve-3d;
+  transition:
+    opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* After burst: same end state as keyframes (radial outward + modest Z) so cards stay gone until Space. */
+.polaroid-burst-layer.polaroid-burst-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translate3d(var(--burst-out-x, 0px), var(--burst-out-y, 0px), 320px) scale(5);
+  transition: none;
+}
+
+/* Each card flies along its ray away from viewport center (vars set in HomePolaroidGrid). */
+@keyframes polaroid-burst-at-camera {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(var(--burst-out-x, 0px), var(--burst-out-y, 0px), 320px) scale(5);
+  }
+}
+
+.polaroid-burst-layer.polaroid-burst-at-camera {
+  transition: none;
+  animation: polaroid-burst-at-camera 0.9s cubic-bezier(0.55, 0.06, 0.7, 0.19) forwards;
+  animation-delay: var(--burst-delay, 0ms);
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .polaroid-burst-layer {
+    transition: none;
+  }
+
+  .polaroid-burst-layer.polaroid-burst-hidden {
+    transition: none;
+    visibility: hidden;
+  }
+
+  .polaroid-burst-layer.polaroid-burst-at-camera {
+    animation: none;
+    will-change: auto;
+  }
+}
+
+/* Quote line: per-word hover (shown when polaroids are hidden). */
+.quote-word-big,
+.quote-word-small,
+.quote-word-film,
+.quote-word-digital,
+.quote-word-print {
+  display: inline-block;
+  cursor: default;
+  vertical-align: baseline;
+}
+
+.quote-word-big {
+  position: relative;
+  z-index: 0;
+  white-space: nowrap;
+  transform: scale(1);
+  transform-origin: center bottom;
+  /* Scale doesn’t affect layout; margin opens the flow so hover doesn’t crowd neighbors */
+  margin-inline: 0.08em;
+  transition:
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    margin-inline 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.quote-word-big:hover {
+  transform: scale(1.22);
+  margin-inline: 0.42em;
+  z-index: 1;
+}
+
+.quote-word-small {
+  transform: scale(1);
+  transform-origin: center bottom;
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.quote-word-small:hover {
+  transform: scale(0.82);
+}
+
+.quote-word-film {
+  position: relative;
+  z-index: 0;
+  transition:
+    color 0.35s ease,
+    text-shadow 0.35s ease;
+}
+
+.quote-word-film::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 50%;
+  width: 2.6em;
+  height: 1.35em;
+  translate: -50% -50%;
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse 80% 80% at 50% 45%,
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(255, 255, 255, 0.06) 45%,
+    transparent 72%
+  );
+  opacity: 0;
+  transition: opacity 0.38s ease;
+  pointer-events: none;
+}
+
+.quote-word-film:hover::before {
+  opacity: 1;
+}
+
+.quote-word-film:hover {
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow:
+    0 0 0.65em rgba(255, 255, 255, 0.35),
+    0 0 1.2em rgba(255, 230, 200, 0.15);
+}
+
+@keyframes quote-digital-glitch {
+  0%,
+  100% {
+    text-shadow:
+      0.04em 0 0 rgba(255, 80, 80, 0.45),
+      -0.04em 0 0 rgba(80, 220, 255, 0.45);
+    transform: translate3d(0, 0, 0);
+  }
+  20% {
+    text-shadow:
+      -0.05em 0 0 rgba(255, 80, 80, 0.5),
+      0.05em 0 0 rgba(80, 220, 255, 0.5);
+    transform: translate3d(0.02em, 0, 0);
+  }
+  40% {
+    text-shadow:
+      0.03em -0.02em 0 rgba(255, 80, 80, 0.4),
+      -0.03em 0.02em 0 rgba(80, 220, 255, 0.4);
+    transform: translate3d(-0.02em, 0.01em, 0);
+  }
+  60% {
+    text-shadow:
+      -0.04em 0.02em 0 rgba(255, 80, 80, 0.45),
+      0.04em -0.02em 0 rgba(80, 220, 255, 0.45);
+    transform: translate3d(0.015em, -0.01em, 0);
+  }
+  80% {
+    text-shadow:
+      0.05em 0 0 rgba(255, 80, 80, 0.35),
+      -0.05em 0 0 rgba(80, 220, 255, 0.35);
+    transform: translate3d(-0.01em, 0, 0);
+  }
+}
+
+.quote-word-digital {
+  transition: color 0.2s ease;
+}
+
+.quote-word-digital:hover {
+  color: rgba(230, 245, 255, 0.95);
+  animation: quote-digital-glitch 0.28s steps(2, end) infinite;
+}
+
+/* Hand-style scribble underline: stroke draws on hover (SVG in component). */
+.quote-word-print {
+  position: relative;
+  padding-bottom: 0.28em;
+  color: inherit;
+}
+
+.quote-word-print__scribble {
+  position: absolute;
+  left: -0.08em;
+  right: -0.08em;
+  bottom: 0;
+  width: calc(100% + 0.16em);
+  height: 0.62em;
+  min-height: 11px;
+  overflow: visible;
+  pointer-events: none;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.quote-word-print__path {
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  transition: stroke-dashoffset 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.quote-word-print:hover .quote-word-print__path {
+  stroke-dashoffset: 0;
+}
+
+/* Polaroid click-to-flip (3D); pivot at card center; entire frame + faces rotate together. */
+.polaroid-flip-scene {
+  perspective: 880px;
+  perspective-origin: center center;
+  transform-style: preserve-3d;
+}
+
+.polaroid-flip-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transform-origin: center center;
+  transform: translateZ(0);
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Negative Y: horizontal flip around vertical midline (left-to-right sweep). */
+.polaroid-flip-inner.is-flipped {
+  transform: translateZ(0) rotateY(-180deg);
+}
+
+.polaroid-flip-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform: translateZ(0.1px);
+}
+
+.polaroid-flip-face--back {
+  transform: rotateY(180deg) translateZ(0.1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .polaroid-flip-inner {
+    transition: none;
+  }
+
+  .quote-word-big:hover,
+  .quote-word-small:hover {
+    transform: none;
+  }
+
+  .quote-word-big:hover {
+    margin-inline: 0.08em;
+    z-index: 0;
+  }
+
+  .quote-word-digital:hover {
+    animation: none;
+    text-shadow: 0.03em 0 0 rgba(255, 80, 80, 0.35),
+      -0.03em 0 0 rgba(80, 220, 255, 0.35);
+  }
+
+  .quote-word-print:hover .quote-word-print__path {
+    stroke-dashoffset: 0;
+    transition: none;
+  }
+}
