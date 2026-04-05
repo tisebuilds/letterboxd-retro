@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Film } from "@/types/film";
+import {
+  CARD_H,
+  CARD_W,
+  POLAROID_FOOTER_H,
+  POLAROID_IMAGE_H,
+} from "@/lib/polaroidDimensions";
 import { formatPolaroidDate } from "@/lib/polaroidUtils";
 
 /**
@@ -28,7 +34,7 @@ function Star({ fraction }: { fraction: 0 | 0.5 | 1 }) {
   if (fraction === 0) {
     return (
       <svg
-        className="h-[15px] w-[15px] shrink-0 text-neutral-400"
+        className="h-3 w-3 shrink-0 text-neutral-400"
         viewBox="0 0 24 24"
         aria-hidden
       >
@@ -45,7 +51,7 @@ function Star({ fraction }: { fraction: 0 | 0.5 | 1 }) {
   if (fraction === 1) {
     return (
       <svg
-        className="h-[15px] w-[15px] shrink-0 text-black"
+        className="h-3 w-3 shrink-0 text-black"
         viewBox="0 0 24 24"
         aria-hidden
       >
@@ -54,7 +60,7 @@ function Star({ fraction }: { fraction: 0 | 0.5 | 1 }) {
     );
   }
   return (
-    <svg className="h-[15px] w-[15px] shrink-0" viewBox="0 0 24 24" aria-hidden>
+    <svg className="h-3 w-3 shrink-0" viewBox="0 0 24 24" aria-hidden>
       <defs>
         <clipPath id={clipId}>
           <rect x="0" y="0" width="12" height="24" />
@@ -167,9 +173,10 @@ export function PolaroidCard({
       <div className={hoverLiftClass || undefined}>
         <div
           ref={rootRef}
-          className={`polaroid-flip-scene h-[284px] w-[160px] shrink-0 ${
+          className={`polaroid-flip-scene shrink-0 ${
             enableHover ? "cursor-pointer" : "pointer-events-none"
           }`}
+          style={{ width: CARD_W, height: CARD_H }}
           role="button"
           tabIndex={enableHover ? 0 : -1}
           aria-pressed={isFlipped}
@@ -187,7 +194,10 @@ export function PolaroidCard({
             className={`${frameClass} ${isFlipped ? "is-flipped" : ""}`}
           >
             <div className="polaroid-flip-face polaroid-flip-face--front flex flex-col">
-            <div className="h-[224px] w-full shrink-0 overflow-hidden bg-neutral-200">
+            <div
+              className="w-full shrink-0 overflow-hidden bg-neutral-200"
+              style={{ height: POLAROID_IMAGE_H }}
+            >
               {film.image && loadPoster ? (
                 // eslint-disable-next-line @next/next/no-img-element -- avoid remotePatterns for external posters
                 <img
@@ -199,9 +209,12 @@ export function PolaroidCard({
                 />
               ) : null}
             </div>
-            <div className="flex h-[58px] w-full shrink-0 items-center justify-center bg-white px-3 py-2">
+            <div
+              className="flex w-full shrink-0 items-center justify-center bg-white px-2.5 py-1.5"
+              style={{ height: POLAROID_FOOTER_H }}
+            >
               <span
-                className="text-[13px] font-normal italic tracking-[-0.02em] text-black"
+                className="text-[11px] font-normal italic tracking-[-0.02em] text-black"
                 style={polaroidFont}
               >
                 {polaroidDate}
@@ -211,7 +224,7 @@ export function PolaroidCard({
 
             <div className="polaroid-flip-face polaroid-flip-face--back flex w-full flex-col items-start justify-center bg-white px-2.5 py-3 text-left">
             <p
-              className="line-clamp-4 w-full text-[11px] font-medium leading-snug tracking-tight text-black [font-family:var(--font-sans),system-ui,sans-serif]"
+              className="line-clamp-4 w-full text-[10px] font-medium leading-snug tracking-tight text-black [font-family:var(--font-sans),system-ui,sans-serif]"
               style={polaroidFont}
             >
               {titleLine}

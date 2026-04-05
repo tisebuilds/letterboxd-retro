@@ -1,11 +1,18 @@
+import {
+  CARD_H,
+  CARD_W,
+  POLAROID_FOOTER_H,
+  POLAROID_IMAGE_H,
+} from "@/lib/polaroidDimensions";
+
 export default function Loading() {
   const placeholders = Array.from({ length: 16 }, (_, i) => i);
 
   const cols = 5;
   const gapX = 48;
   const gapY = 48;
-  const cardW = 160;
-  const cardH = 284;
+  const cardW = CARD_W;
+  const cardH = CARD_H;
   const margin = 320;
 
   return (
@@ -35,9 +42,18 @@ export default function Loading() {
                 style={{ left: x, top: y, width: cardW }}
                 aria-hidden
               >
-                <div className="box-border flex h-[284px] w-[160px] shrink-0 flex-col overflow-hidden border border-[#e0e0e0] bg-white shadow-[0_8px_22px_rgba(0,0,0,0.35)]">
-                  <div className="h-[224px] w-full shrink-0 bg-neutral-300/70" />
-                  <div className="flex h-[58px] shrink-0 items-center gap-1.5 px-3 py-2">
+                <div
+                  className="box-border flex shrink-0 flex-col overflow-hidden border border-[#e0e0e0] bg-white shadow-[0_8px_22px_rgba(0,0,0,0.35)]"
+                  style={{ width: cardW, height: cardH }}
+                >
+                  <div
+                    className="w-full shrink-0 bg-neutral-300/70"
+                    style={{ height: POLAROID_IMAGE_H }}
+                  />
+                  <div
+                    className="flex shrink-0 items-center gap-1.5 px-2.5 py-1.5"
+                    style={{ height: POLAROID_FOOTER_H }}
+                  >
                     <div className="h-1.5 w-5 rounded-sm bg-neutral-300/80" />
                     <div className="h-4 w-3 rounded-sm bg-neutral-300/80" />
                   </div>

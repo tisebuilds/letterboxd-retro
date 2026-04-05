@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import {
   DM_Sans,
   Instrument_Serif,
@@ -32,6 +32,10 @@ const instrumentSerif = Instrument_Serif({
 export const metadata: Metadata = {
   title: "tisebuilds / films",
   description: "Personal film diary from Letterboxd",
+};
+
+export const viewport: Viewport = {
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

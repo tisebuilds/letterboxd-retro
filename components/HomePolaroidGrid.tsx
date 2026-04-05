@@ -11,10 +11,7 @@ import {
 import type { CSSProperties } from "react";
 import { PolaroidCard } from "@/components/PolaroidCard";
 import type { Film } from "@/types/film";
-
-/** Match PolaroidCard outer box-border size (160×284). */
-const CARD_W = 160;
-const CARD_H = 284;
+import { CARD_H, CARD_W } from "@/lib/polaroidDimensions";
 const GAP_X = 48;
 const GAP_Y = 48;
 /** Extra space around the grid so panning feels open before content thins out. */
@@ -251,6 +248,28 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
   burstActiveRef.current = burstActive;
   polaroidsHiddenRef.current = polaroidsHidden;
 
+  const triggerRevealAction = useCallback(() => {
+    if (burstActiveRef.current) return;
+    if (polaroidsHiddenRef.current) {
+      setPolaroidsHidden(false);
+      return;
+    }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    const burstResetMs =
+      BURST_ANIM_MS + (BURST_STAGGER_SLOTS - 1) * BURST_STAGGER_STEP_MS;
+    setBurstActive(true);
+    if (burstTimeoutRef.current != null) {
+      clearTimeout(burstTimeoutRef.current);
+    }
+    burstTimeoutRef.current = setTimeout(() => {
+      burstTimeoutRef.current = null;
+      setBurstActive(false);
+      setPolaroidsHidden(true);
+    }, burstResetMs);
+  }, []);
+
   const flushViewCull = useCallback(() => {
     const v = viewportRef.current;
     if (!v) return;
@@ -417,9 +436,6 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
   }, [syncTransform]);
 
   useEffect(() => {
-    const burstResetMs =
-      BURST_ANIM_MS + (BURST_STAGGER_SLOTS - 1) * BURST_STAGGER_STEP_MS;
-
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code !== "Space") return;
       if (e.defaultPrevented) return;
@@ -433,7 +449,7 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
 
       if (polaroidsHiddenRef.current) {
         e.preventDefault();
-        setPolaroidsHidden(false);
+        triggerRevealAction();
         return;
       }
 
@@ -441,15 +457,7 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
         return;
       }
       e.preventDefault();
-      setBurstActive(true);
-      if (burstTimeoutRef.current != null) {
-        clearTimeout(burstTimeoutRef.current);
-      }
-      burstTimeoutRef.current = setTimeout(() => {
-        burstTimeoutRef.current = null;
-        setBurstActive(false);
-        setPolaroidsHidden(true);
-      }, burstResetMs);
+      triggerRevealAction();
     };
 
     window.addEventListener("keydown", onKeyDown);
@@ -460,7 +468,7 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
         burstTimeoutRef.current = null;
       }
     };
-  }, []);
+  }, [triggerRevealAction]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -519,21 +527,35 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
       >
         <div className="absolute inset-x-0 top-0 h-[min(22vh,200px)] bg-gradient-to-b from-[#111] to-transparent" />
         <div className="absolute inset-x-0 bottom-0 h-[min(22vh,200px)] bg-gradient-to-t from-[#111] to-transparent" />
-        <div className="absolute inset-y-0 left-0 w-[min(18vw,160px)] bg-gradient-to-r from-[#111] to-transparent" />
-        <div className="absolute inset-y-0 right-0 w-[min(18vw,160px)] bg-gradient-to-l from-[#111] to-transparent" />
+        <div
+          className="absolute inset-y-0 left-0 bg-gradient-to-r from-[#111] to-transparent"
+          style={{ width: `min(18vw, ${CARD_W}px)` }}
+        />
+        <div
+          className="absolute inset-y-0 right-0 bg-gradient-to-l from-[#111] to-transparent"
+          style={{ width: `min(18vw, ${CARD_W}px)` }}
+        />
       </div>
 
-      <p
-        className={`pointer-events-none fixed bottom-4 left-4 z-[7] max-w-[min(100vw-2rem,14rem)] text-[11px] leading-snug tracking-wide text-white/40 transition-opacity duration-300 [font-family:var(--font-mono),ui-monospace,monospace] sm:bottom-5 sm:left-5 sm:text-xs sm:max-w-none ${
-          showSpaceHint ? "opacity-100" : "opacity-0"
+      <button
+        type="button"
+        className={`fixed bottom-[max(1rem,env(safe-area-inset-bottom,0px))] left-1/2 z-[7] max-w-[min(calc(100vw-2rem),22rem)] -translate-x-1/2 rounded-xl border border-white/12 bg-black/55 px-5 py-2.5 text-center text-[11px] leading-snug tracking-wide text-white/65 shadow-[0_8px_36px_rgba(0,0,0,0.55)] backdrop-blur-md transition-[opacity,transform,box-shadow] duration-300 [font-family:var(--font-mono),ui-monospace,monospace] hover:border-white/18 hover:bg-black/60 hover:text-white/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25 active:scale-[0.99] sm:bottom-[max(1.25rem,env(safe-area-inset-bottom,0px))] sm:px-6 sm:py-3 sm:text-xs ${
+          showSpaceHint
+            ? "pointer-events-auto opacity-100"
+            : "pointer-events-none opacity-0"
         }`}
         aria-hidden={!showSpaceHint}
+        tabIndex={showSpaceHint ? 0 : -1}
+        aria-label="Reveal message. Same as pressing Space."
+        onClick={() => triggerRevealAction()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
-        Press <kbd className="rounded border border-white/20 bg-white/[0.06] px-1 py-px font-mono text-[0.95em] text-white/55 not-italic">
+        Press{" "}
+        <kbd className="mx-0.5 inline rounded-md border border-white/25 bg-black/50 px-1.5 py-0.5 text-[0.88em] font-normal text-white/80 not-italic shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] [font-family:var(--font-sans),system-ui,sans-serif]">
           Space
         </kbd>{" "}
         to reveal a message
-      </p>
+      </button>
 
       <div
         className="pointer-events-none absolute inset-0 z-[6] flex items-center justify-center px-6"
@@ -542,7 +564,7 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
         <p
           role="status"
           aria-live="polite"
-          className={`pointer-events-auto max-w-lg text-center text-lg leading-relaxed text-white/75 transition-opacity duration-300 [font-family:var(--font-serif),Georgia,serif] sm:text-xl ${
+          className={`pointer-events-auto max-w-2xl text-center text-2xl leading-relaxed text-white/75 transition-opacity duration-300 [font-family:var(--font-serif),Georgia,serif] sm:text-3xl ${
             showQuote ? "opacity-100" : "opacity-0"
           }`}
         >
