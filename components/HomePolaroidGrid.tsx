@@ -12,16 +12,25 @@ import type { CSSProperties } from "react";
 import { PolaroidCard } from "@/components/PolaroidCard";
 import type { Film } from "@/types/film";
 import { CARD_H, CARD_W } from "@/lib/polaroidDimensions";
-const GAP_X = 48;
-const GAP_Y = 48;
-/** Extra space around the grid so panning feels open before content thins out. */
-const CANVAS_MARGIN = 960;
-/** World-space pad when deciding which tiles intersect the viewport (keeps neighbors mounted). */
-const TILE_VIEW_MARGIN_PX = 360;
-/** Cap tile span so pathological tiny viewports do not mount thousands of cells. */
-const MAX_TILES_PER_AXIS = 7;
-/** Extra margin around the viewport for mounting polaroids before they scroll on-screen. */
-const ITEM_CULL_MARGIN_PX = 420;
+
+const FRICTION = 0.92;
+const SENSITIVITY = 0.8;
+const MAX_VEL = 40;
+const CLICK_THRESHOLD = 5;
+
+/** Marks the polaroid root so the pan canvas can ignore pointerdown (see capture listener). */
+const POLAROID_CARD_SELECTOR = "[data-polaroid-card]";
+
+const NUM_COLS = 5;
+const COL_SPACING = CARD_W + 48;
+const ROW_SPACING = CARD_H + 48;
+
+const phi = 1.618;
+const COL_OFFSETS = Array.from({ length: NUM_COLS }, (_, i) => {
+  return (
+    ((i * phi * ROW_SPACING * 1.5) % (ROW_SPACING * 3)) - ROW_SPACING * 1.5
+  );
+});
 
 /** Spacebar burst: must match `polaroid-burst-at-camera` duration in globals.css. */
 const BURST_ANIM_MS = 900;
@@ -36,14 +45,17 @@ function burstStaggerDelayMs(key: string): number {
   return (h % BURST_STAGGER_SLOTS) * BURST_STAGGER_STEP_MS;
 }
 
-/** Unit vector from viewport center through this card, scaled so each polaroid flies outward (not toward center). */
+function wrapAxis(base: number, scroll: number, span: number): number {
+  if (span <= 0) return base + scroll;
+  let p = base + scroll;
+  const half = span / 2;
+  p = ((((p + half) % span) + span) % span) - half;
+  return p;
+}
+
 function burstOutwardOffsetPx(
-  slotLeft: number,
-  slotTop: number,
-  canvasOriginX: number,
-  canvasOriginY: number,
-  panX: number,
-  panY: number,
+  cx: number,
+  cy: number,
   vw: number,
   vh: number,
   key: string
@@ -51,8 +63,6 @@ function burstOutwardOffsetPx(
   if (vw < 2 || vh < 2) {
     return { x: 0, y: -720 };
   }
-  const cx = canvasOriginX + panX + slotLeft + CARD_W / 2;
-  const cy = canvasOriginY + panY + slotTop + CARD_H / 2;
   const vx = vw / 2;
   const vy = vh / 2;
   let rdx = cx - vx;
@@ -74,164 +84,68 @@ function burstOutwardOffsetPx(
   return { x: rdx, y: rdy };
 }
 
-function worldRectIntersectsCullView(
-  wx: number,
-  wy: number,
-  panX: number,
-  panY: number,
-  vw: number,
-  vh: number
-): boolean {
-  if (vw < 1 || vh < 1) return true;
-  const vl = -panX - ITEM_CULL_MARGIN_PX;
-  const vr = -panX + vw + ITEM_CULL_MARGIN_PX;
-  const vt = -panY - ITEM_CULL_MARGIN_PX;
-  const vb = -panY + vh + ITEM_CULL_MARGIN_PX;
-  return (
-    wx + CARD_W >= vl && wx <= vr && wy + CARD_H >= vt && wy <= vb
-  );
-}
-
-type BaseItem = { x: number; y: number; index: number };
-
-function layoutBaseGrid(filmCount: number): {
-  canvasW: number;
-  canvasH: number;
-  gridW: number;
-  gridH: number;
-  /** Period for tiling: next copy of the wall starts this far in world space (not full canvas — avoids huge empty margins). */
-  strideX: number;
-  strideY: number;
-  baseItems: BaseItem[];
-} {
-  const n = filmCount;
+function computeGridLayout(films: Film[]) {
+  const n = films.length;
   if (n === 0) {
-    const w = CANVAS_MARGIN * 2 + CARD_W;
-    const h = CANVAS_MARGIN * 2 + CARD_H;
     return {
-      canvasW: w,
-      canvasH: h,
-      gridW: CARD_W,
-      gridH: CARD_H,
-      strideX: w,
-      strideY: h,
-      baseItems: [],
+      TOTAL_W: 0,
+      TOTAL_H: 0,
+      bases: [] as { baseX: number; baseY: number }[],
     };
   }
-
-  const cols = Math.min(12, Math.max(4, Math.ceil(Math.sqrt(n * 1.12))));
-  const rows = Math.ceil(n / cols);
-  const cellW = CARD_W + GAP_X;
-  const cellH = CARD_H + GAP_Y;
-
-  const gridW = cols * CARD_W + (cols - 1) * GAP_X;
-  const gridH = rows * CARD_H + (rows - 1) * GAP_Y;
-
-  const canvasW = gridW + CANVAS_MARGIN * 2;
-  const canvasH = gridH + CANVAS_MARGIN * 2;
-
-  const strideX = gridW + GAP_X;
-  const strideY = gridH + GAP_Y;
-
-  const baseItems: BaseItem[] = [];
-  for (let index = 0; index < n; index++) {
-    const col = index % cols;
-    const row = Math.floor(index / cols);
-    const x = CANVAS_MARGIN + col * cellW;
-    const y = CANVAS_MARGIN + row * cellH;
-    baseItems.push({ x, y, index });
-  }
-
-  return { canvasW, canvasH, gridW, gridH, strideX, strideY, baseItems };
+  const numRows = Math.ceil(n / NUM_COLS);
+  const TOTAL_W = NUM_COLS * COL_SPACING;
+  const TOTAL_H = numRows * ROW_SPACING;
+  const bases = films.map((_, i) => {
+    const col = i % NUM_COLS;
+    const row = Math.floor(i / NUM_COLS);
+    const baseX = col * COL_SPACING - TOTAL_W / 2 + COL_SPACING / 2;
+    const baseY =
+      row * ROW_SPACING +
+      COL_OFFSETS[col]! -
+      TOTAL_H / 2 +
+      ROW_SPACING / 2;
+    return { baseX, baseY };
+  });
+  return { TOTAL_W, TOTAL_H, bases };
 }
 
-/** Deterministic rotation so echo tiles reshuffle assignments without colliding with (0,0). */
-function tileRotation(tx: number, ty: number, n: number): number {
-  if (n <= 1) return 0;
-  const h = (tx * 374761393 + ty * 668265263) >>> 0;
-  return h % n;
-}
-
-type TileWindow = { txMin: number; txMax: number; tyMin: number; tyMax: number };
-
-function computeTileWindow(
-  panX: number,
-  panY: number,
-  vw: number,
-  vh: number,
-  strideX: number,
-  strideY: number
-): TileWindow {
-  const left = -panX - TILE_VIEW_MARGIN_PX;
-  const right = -panX + vw + TILE_VIEW_MARGIN_PX;
-  const top = -panY - TILE_VIEW_MARGIN_PX;
-  const bottom = -panY + vh + TILE_VIEW_MARGIN_PX;
-
-  let txMin = Math.floor(left / strideX);
-  let txMax = Math.floor((right - 1) / strideX);
-  let tyMin = Math.floor(top / strideY);
-  let tyMax = Math.floor((bottom - 1) / strideY);
-
-  const clampAxis = (
-    min: number,
-    max: number,
-    centerWorld: number,
-    stride: number
-  ) => {
-    const span = max - min + 1;
-    if (span <= MAX_TILES_PER_AXIS) return [min, max] as const;
-    const centerTile = Math.floor(centerWorld / stride);
-    const before = Math.floor((MAX_TILES_PER_AXIS - 1) / 2);
-    const after = MAX_TILES_PER_AXIS - 1 - before;
-    return [centerTile - before, centerTile + after] as const;
-  };
-
-  const centerWorldX = -panX + vw / 2;
-  const centerWorldY = -panY + vh / 2;
-  [txMin, txMax] = clampAxis(txMin, txMax, centerWorldX, strideX);
-  [tyMin, tyMax] = clampAxis(tyMin, tyMax, centerWorldY, strideY);
-
-  return { txMin, txMax, tyMin, tyMax };
-}
-
-function windowsEqual(a: TileWindow, b: TileWindow) {
-  return (
-    a.txMin === b.txMin &&
-    a.txMax === b.txMax &&
-    a.tyMin === b.tyMin &&
-    a.tyMax === b.tyMax
-  );
-}
+type TileRef = {
+  el: HTMLDivElement;
+  burstEl: HTMLDivElement;
+  key: string;
+};
 
 export function HomePolaroidGrid({ films }: { films: Film[] }) {
-  const n = films.length;
-  const { canvasW, canvasH, gridW, gridH, strideX, strideY, baseItems } =
-    useMemo(() => layoutBaseGrid(n), [n]);
-
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const panRef = useRef({ x: 0, y: 0 });
-  const dragRef = useRef<{ pointerId: number; x: number; y: number } | null>(
-    null
+  const { TOTAL_W, TOTAL_H, bases } = useMemo(
+    () => computeGridLayout(films),
+    [films]
   );
-  const didInitialCenter = useRef(false);
-  const [tileWindow, setTileWindow] = useState<TileWindow>({
-    txMin: 0,
-    txMax: 0,
-    tyMin: 0,
-    tyMax: 0,
-  });
-  const [isDragging, setIsDragging] = useState(false);
-  const [viewCull, setViewCull] = useState({
-    panX: 0,
-    panY: 0,
-    vw: 0,
-    vh: 0,
-  });
-  const rafCullRef = useRef<number | null>(null);
+
+  const pos = useRef({ x: 0, y: 0 });
+  const vel = useRef({ vx: 0, vy: 0 });
+  const rafId = useRef(0);
+  const isDragging = useRef(false);
+  const dragStart = useRef({ x: 0, y: 0, px: 0, py: 0 });
+  const lastPointer = useRef({ x: 0, y: 0, t: 0 });
+  const dragTotalMove = useRef(0);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewportSize = useRef({ w: 0, h: 0 });
+  const tileRefs = useRef<(TileRef | undefined)[]>([]);
+  const assignTileRef = useRef<(i: number, el: HTMLDivElement | null) => void>(
+    () => {}
+  );
+  const tileRefCallbackByIndex = useRef(
+    new Map<number, (el: HTMLDivElement | null) => void>()
+  );
+  const prefersReducedMotionRef = useRef(false);
+
+  const layoutRef = useRef({ TOTAL_W, TOTAL_H, bases });
+  layoutRef.current = { TOTAL_W, TOTAL_H, bases };
+
   const [burstActive, setBurstActive] = useState(false);
   const burstActiveRef = useRef(false);
-  /** After a burst finishes, cards stay hidden until Space again. */
   const [polaroidsHidden, setPolaroidsHidden] = useState(false);
   const polaroidsHiddenRef = useRef(false);
   const burstTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -239,8 +153,12 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    prefersReducedMotionRef.current = mq.matches;
     setPrefersReducedMotion(mq.matches);
-    const onChange = () => setPrefersReducedMotion(mq.matches);
+    const onChange = () => {
+      prefersReducedMotionRef.current = mq.matches;
+      setPrefersReducedMotion(mq.matches);
+    };
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, []);
@@ -270,170 +188,241 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
     }, burstResetMs);
   }, []);
 
-  const flushViewCull = useCallback(() => {
-    const v = viewportRef.current;
-    if (!v) return;
-    const p = panRef.current;
-    const next = {
-      panX: p.x,
-      panY: p.y,
-      vw: v.clientWidth,
-      vh: v.clientHeight,
-    };
-    setViewCull((prev) =>
-      prev.panX === next.panX &&
-      prev.panY === next.panY &&
-      prev.vw === next.vw &&
-      prev.vh === next.vh
-        ? prev
-        : next
-    );
-  }, []);
+  const updateTiles = useRef<() => void>(() => {});
 
-  const scheduleViewCull = useCallback(() => {
-    if (rafCullRef.current != null) return;
-    rafCullRef.current = requestAnimationFrame(() => {
-      rafCullRef.current = null;
-      flushViewCull();
-    });
-  }, [flushViewCull]);
-
-  const refreshTileWindow = useCallback(() => {
-    const view = viewportRef.current;
-    if (!view || strideX < 1 || strideY < 1) return;
-    const vw = view.clientWidth;
-    const vh = view.clientHeight;
+  updateTiles.current = () => {
+    const { w: vw, h: vh } = viewportSize.current;
     if (vw < 1 || vh < 1) return;
-    const next = computeTileWindow(
-      panRef.current.x,
-      panRef.current.y,
-      vw,
-      vh,
-      strideX,
-      strideY
-    );
-    setTileWindow((prev) => (windowsEqual(prev, next) ? prev : next));
-  }, [strideX, strideY]);
 
-  const syncTransform = useCallback(() => {
-    const el = canvasRef.current;
-    if (!el) return;
-    const { x, y } = panRef.current;
-    el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-    refreshTileWindow();
-    scheduleViewCull();
-  }, [refreshTileWindow, scheduleViewCull]);
+    const { TOTAL_W: tw, TOTAL_H: th, bases: b } = layoutRef.current;
+    const p = pos.current;
+    const n = b.length;
 
-  const placedItems = useMemo(() => {
-    if (n === 0 || baseItems.length === 0) return [];
-    const { txMin, txMax, tyMin, tyMax } = tileWindow;
-    const { panX, panY, vw, vh } = viewCull;
-    const out: { key: string; film: Film; x: number; y: number }[] = [];
-    for (let tx = txMin; tx <= txMax; tx++) {
-      for (let ty = tyMin; ty <= tyMax; ty++) {
-        const rot = tx === 0 && ty === 0 ? 0 : tileRotation(tx, ty, n);
-        for (const b of baseItems) {
-          const wx = tx * strideX + b.x;
-          const wy = ty * strideY + b.y;
-          if (!worldRectIntersectsCullView(wx, wy, panX, panY, vw, vh)) {
-            continue;
-          }
-          const film = films[(b.index + rot) % n]!;
-          const lx = wx - txMin * strideX;
-          const ly = wy - tyMin * strideY;
-          out.push({
-            key: `${tx}-${ty}-${b.index}-${film.guid}`,
-            film,
-            x: lx,
-            y: ly,
-          });
-        }
-      }
+    for (let i = 0; i < n; i++) {
+      const tile = tileRefs.current[i];
+      if (!tile) continue;
+      const base = b[i];
+      if (!base) continue;
+
+      const tx = vw / 2 + wrapAxis(base.baseX, p.x, tw);
+      const ty = vh / 2 + wrapAxis(base.baseY, p.y, th);
+      tile.el.style.transform = `translate3d(${tx}px, ${ty}px, 0)`;
     }
-    return out;
-  }, [n, baseItems, films, tileWindow, strideX, strideY, viewCull]);
+  };
 
-  const canvasOriginX = tileWindow.txMin * strideX;
-  const canvasOriginY = tileWindow.tyMin * strideY;
-  const canvasSpanW =
-    (tileWindow.txMax - tileWindow.txMin) * strideX + CANVAS_MARGIN + gridW;
-  const canvasSpanH =
-    (tileWindow.tyMax - tileWindow.tyMin) * strideY + CANVAS_MARGIN + gridH;
+  useEffect(() => {
+    const tick = () => {
+      const reduced = prefersReducedMotionRef.current;
 
-  const tryInitialCenter = useCallback(() => {
-    if (didInitialCenter.current) return;
-    const view = viewportRef.current;
-    const canvas = canvasRef.current;
-    if (!view || !canvas) return;
-    const vw = view.clientWidth;
-    const vh = view.clientHeight;
-    if (vw < 1 || vh < 1) return;
-    const cx =
-      n > 0 && baseItems.length > 0
-        ? CANVAS_MARGIN + gridW / 2
-        : canvasW / 2;
-    const cy =
-      n > 0 && baseItems.length > 0
-        ? CANVAS_MARGIN + gridH / 2
-        : canvasH / 2;
-    panRef.current = {
-      x: vw / 2 - cx,
-      y: vh / 2 - cy,
-    };
-    syncTransform();
-    flushViewCull();
-    didInitialCenter.current = true;
-  }, [
-    n,
-    baseItems.length,
-    canvasW,
-    canvasH,
-    gridW,
-    gridH,
-    syncTransform,
-    flushViewCull,
-  ]);
-
-  useLayoutEffect(() => {
-    didInitialCenter.current = false;
-  }, [strideX, strideY, gridW, gridH]);
-
-  useLayoutEffect(() => {
-    const view = viewportRef.current;
-    if (!view) return;
-    tryInitialCenter();
-    const ro = new ResizeObserver(() => {
-      tryInitialCenter();
-      flushViewCull();
-    });
-    ro.observe(view);
-    return () => ro.disconnect();
-  }, [tryInitialCenter, flushViewCull]);
-
-  useLayoutEffect(() => {
-    return () => {
-      if (rafCullRef.current != null) {
-        cancelAnimationFrame(rafCullRef.current);
+      if (reduced) {
+        vel.current.vx = 0;
+        vel.current.vy = 0;
+      } else if (!isDragging.current) {
+        vel.current.vx *= FRICTION;
+        vel.current.vy *= FRICTION;
+        pos.current.x += vel.current.vx;
+        pos.current.y += vel.current.vy;
       }
+
+      updateTiles.current();
+      rafId.current = requestAnimationFrame(tick);
     };
+
+    rafId.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId.current);
+  }, []);
+
+  const syncViewportSize = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    viewportSize.current = { w: el.clientWidth, h: el.clientHeight };
+    updateTiles.current();
   }, []);
 
   useLayoutEffect(() => {
-    const view = viewportRef.current;
-    if (!view) return;
+    syncViewportSize();
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      syncViewportSize();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [syncViewportSize]);
+
+  assignTileRef.current = (i, el) => {
+    if (!el) {
+      tileRefs.current[i] = undefined;
+      return;
+    }
+    const burstEl = el.querySelector(
+      ".polaroid-burst-layer"
+    ) as HTMLDivElement | null;
+    if (!burstEl) return;
+    const film = films[i];
+    if (!film) return;
+    tileRefs.current[i] = {
+      el,
+      burstEl,
+      key: `${i}-${film.guid}`,
+    };
+  };
+
+  useLayoutEffect(() => {
+    const map = tileRefCallbackByIndex.current;
+    for (const k of [...map.keys()]) {
+      if (k >= films.length) map.delete(k);
+    }
+  }, [films.length]);
+
+  function getTileRefCallback(i: number) {
+    const map = tileRefCallbackByIndex.current;
+    if (!map.has(i)) {
+      map.set(i, (el) => assignTileRef.current(i, el));
+    }
+    return map.get(i)!;
+  }
+
+  useLayoutEffect(() => {
+    if (!burstActive) return;
+    const vw = viewportSize.current.w;
+    const vh = viewportSize.current.h;
+    if (vw < 1 || vh < 1) return;
+
+    const { TOTAL_W: tw, TOTAL_H: th, bases: b } = layoutRef.current;
+    const p = pos.current;
+    const n = b.length;
+
+    for (let i = 0; i < n; i++) {
+      const tile = tileRefs.current[i];
+      if (!tile) continue;
+      const base = b[i];
+      if (!base) continue;
+
+      const sl = vw / 2 + wrapAxis(base.baseX, p.x, tw);
+      const st = vh / 2 + wrapAxis(base.baseY, p.y, th);
+      const cx = sl + CARD_W / 2;
+      const cy = st + CARD_H / 2;
+      const { x, y } = burstOutwardOffsetPx(cx, cy, vw, vh, tile.key);
+      tile.burstEl.style.setProperty("--burst-out-x", `${x}px`);
+      tile.burstEl.style.setProperty("--burst-out-y", `${y}px`);
+    }
+  }, [burstActive, films, TOTAL_W, TOTAL_H]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      panRef.current = {
-        x: panRef.current.x - e.deltaX,
-        y: panRef.current.y - e.deltaY,
-      };
-      syncTransform();
+      const reduced = prefersReducedMotionRef.current;
+      if (reduced) {
+        pos.current.x -= e.deltaX * SENSITIVITY;
+        pos.current.y -= e.deltaY * SENSITIVITY;
+        updateTiles.current();
+        return;
+      }
+      vel.current.vx -= e.deltaX * SENSITIVITY;
+      vel.current.vy -= e.deltaY * SENSITIVITY;
+      vel.current.vx = Math.max(-MAX_VEL, Math.min(MAX_VEL, vel.current.vx));
+      vel.current.vy = Math.max(-MAX_VEL, Math.min(MAX_VEL, vel.current.vy));
     };
 
-    view.addEventListener("wheel", onWheel, { passive: false });
-    return () => view.removeEventListener("wheel", onWheel);
-  }, [syncTransform]);
+    container.addEventListener("wheel", onWheel, { passive: false });
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const t = e.target;
+      if (
+        t instanceof Element &&
+        t.closest(POLAROID_CARD_SELECTOR) != null
+      ) {
+        return;
+      }
+      isDragging.current = true;
+      dragTotalMove.current = 0;
+      dragStart.current = {
+        x: e.clientX,
+        y: e.clientY,
+        px: pos.current.x,
+        py: pos.current.y,
+      };
+      lastPointer.current = {
+        x: e.clientX,
+        y: e.clientY,
+        t: performance.now(),
+      };
+      try {
+        container.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture optional */
+      }
+      container.style.cursor = "grabbing";
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDragging.current) return;
+      e.preventDefault();
+      const reduced = prefersReducedMotionRef.current;
+      const dx = e.clientX - dragStart.current.x;
+      const dy = e.clientY - dragStart.current.y;
+      dragTotalMove.current = Math.hypot(dx, dy);
+
+      pos.current.x = dragStart.current.px + dx;
+      pos.current.y = dragStart.current.py + dy;
+
+      if (!reduced) {
+        const now = performance.now();
+        const dt = now - lastPointer.current.t;
+        if (dt > 0) {
+          vel.current.vx =
+            ((e.clientX - lastPointer.current.x) / dt) * 16;
+          vel.current.vy =
+            ((e.clientY - lastPointer.current.y) / dt) * 16;
+        }
+        lastPointer.current = { x: e.clientX, y: e.clientY, t: now };
+      }
+
+      updateTiles.current();
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      container.style.cursor = "grab";
+      try {
+        container.releasePointerCapture(e.pointerId);
+      } catch {
+        /* already released */
+      }
+      if (dragTotalMove.current < CLICK_THRESHOLD) {
+        vel.current.vx = 0;
+        vel.current.vy = 0;
+      }
+    };
+
+    const onLostPointerCapture = () => {
+      isDragging.current = false;
+      container.style.cursor = "grab";
+    };
+
+    container.addEventListener("pointerdown", onPointerDown, { capture: true });
+    container.addEventListener("pointermove", onPointerMove);
+    container.addEventListener("pointerup", onPointerUp);
+    container.addEventListener("pointercancel", onPointerUp);
+    container.addEventListener("lostpointercapture", onLostPointerCapture);
+
+    return () => {
+      container.removeEventListener("wheel", onWheel);
+      container.removeEventListener("pointerdown", onPointerDown, {
+        capture: true,
+      });
+      container.removeEventListener("pointermove", onPointerMove);
+      container.removeEventListener("pointerup", onPointerUp);
+      container.removeEventListener("pointercancel", onPointerUp);
+      container.removeEventListener("lostpointercapture", onLostPointerCapture);
+    };
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -469,48 +458,6 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
       }
     };
   }, [triggerRevealAction]);
-
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      /* Safari / embedded browsers can throw; drag still works without capture */
-    }
-    dragRef.current = {
-      pointerId: e.pointerId,
-      x: e.clientX,
-      y: e.clientY,
-    };
-    setIsDragging(true);
-  };
-
-  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const d = dragRef.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    const dx = e.clientX - d.x;
-    const dy = e.clientY - d.y;
-    d.x = e.clientX;
-    d.y = e.clientY;
-    panRef.current = {
-      x: panRef.current.x + dx,
-      y: panRef.current.y + dy,
-    };
-    syncTransform();
-  };
-
-  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    const d = dragRef.current;
-    if (d && d.pointerId === e.pointerId) {
-      dragRef.current = null;
-      setIsDragging(false);
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {
-        /* already released */
-      }
-    }
-  };
 
   const showQuote = polaroidsHidden && !burstActive;
   const showSpaceHint =
@@ -575,13 +522,9 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
                 {"\u00a0"}big{"\u00a0"}
               </span>
               and{" "}
-              <span className="quote-word-small">small</span>
-              {" "}
-              in{" "}
+              <span className="quote-word-small">small</span> in{" "}
               <span className="quote-word-film">film</span>,{" "}
-              <span className="quote-word-digital">digital</span>
-              {" "}
-              and{" "}
+              <span className="quote-word-digital">digital</span> and{" "}
               <span className="quote-word-print">
                 print
                 <svg
@@ -608,71 +551,48 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
       </div>
 
       <div
-        ref={viewportRef}
+        ref={containerRef}
         role="application"
         aria-label="Film diary canvas. Pan in any direction; the same diary repeats in neighboring spaces. Drag or use a trackpad to move."
-        className={`absolute inset-0 z-[4] touch-none select-none [perspective:1200px] [perspective-origin:50%_50%] ${
-          isDragging ? "cursor-grabbing" : "cursor-grab"
-        }`}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onLostPointerCapture={() => {
-          dragRef.current = null;
-          setIsDragging(false);
-        }}
+        className="absolute inset-0 z-[4] cursor-grab touch-none select-none [perspective:1200px] [perspective-origin:50%_50%] [transform-style:preserve-3d]"
       >
-        <div
-          ref={canvasRef}
-          className="absolute will-change-transform [transform-style:preserve-3d]"
-          style={{
-            left: canvasOriginX,
-            top: canvasOriginY,
-            width: canvasSpanW,
-            height: canvasSpanH,
-          }}
-        >
-          {placedItems.map(({ key, film, x, y }) => {
-            const { panX, panY, vw, vh } = viewCull;
-            const { x: outX, y: outY } = burstOutwardOffsetPx(
-              x,
-              y,
-              canvasOriginX,
-              canvasOriginY,
-              panX,
-              panY,
-              vw,
-              vh,
-              key
-            );
-            const burstLayerStyle = {
-              "--burst-out-x": `${outX}px`,
-              "--burst-out-y": `${outY}px`,
-              ...(burstActive
-                ? { "--burst-delay": `${burstStaggerDelayMs(key)}ms` }
-                : {}),
-            } as CSSProperties;
+        {films.map((film, i) => {
+          const burstKey = `${i}-${film.guid}`;
+          const burstLayerStyle = {
+            ...(burstActive
+              ? { "--burst-delay": `${burstStaggerDelayMs(burstKey)}ms` }
+              : {}),
+          } as CSSProperties;
 
-            return (
+          return (
             <div
-              key={key}
-              className="polaroid-slot-enter absolute cursor-default"
-              style={{ left: x, top: y, width: CARD_W }}
+              key={film.guid}
+              ref={getTileRefCallback(i)}
+              className="absolute cursor-default"
+              style={{
+                left: 0,
+                top: 0,
+                willChange: "auto",
+                transition: "none",
+              }}
             >
               <div
-                className={`polaroid-burst-layer${burstActive ? " polaroid-burst-at-camera" : ""}${polaroidsHidden && !burstActive ? " polaroid-burst-hidden" : ""}`}
-                style={burstLayerStyle}
+                className="polaroid-slot-enter"
+                style={{ width: CARD_W }}
               >
-                <PolaroidCard
-                  film={film}
-                  enableHover={!burstActive && !polaroidsHidden}
-                />
+                <div
+                  className={`polaroid-burst-layer${burstActive ? " polaroid-burst-at-camera" : ""}${polaroidsHidden && !burstActive ? " polaroid-burst-hidden" : ""}`}
+                  style={burstLayerStyle}
+                >
+                  <PolaroidCard
+                    film={film}
+                    enableHover={!burstActive && !polaroidsHidden}
+                  />
+                </div>
               </div>
             </div>
-            );
-          })}
-        </div>
+          );
+        })}
       </div>
     </main>
   );

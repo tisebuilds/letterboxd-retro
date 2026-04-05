@@ -1,5 +1,15 @@
 "use client";
 
+import {
+  animate,
+  motion,
+  useMotionTemplate,
+  useMotionValue,
+  useReducedMotion,
+  useSpring,
+  useTransform,
+  type MotionValue,
+} from "framer-motion";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Film } from "@/types/film";
 import {
@@ -15,6 +25,8 @@ import { formatPolaroidDate } from "@/lib/polaroidUtils";
  * panning, before cards fully enter the screen (canvas uses CSS transforms).
  */
 const PAN_LAZY_ROOT_MARGIN_PX = 336;
+
+const SPRING = { stiffness: 200, damping: 20 };
 
 const STAR_PATH =
   "M12 2.5 15.09 8.76 22 9.77 17 14.64 18.18 21.5 12 18.27 5.82 21.5 7 14.64 2 9.77 8.91 8.76 12 2.5z";
@@ -99,6 +111,23 @@ function RatingStars({ rating }: { rating: number | null }) {
   );
 }
 
+function PosterGleam({ mx }: { mx: MotionValue<number> }) {
+  const gleamTilt = useTransform(mx, [-0.5, 0.5], [40, 52]);
+  return (
+    <motion.div
+      className="pointer-events-none absolute inset-0 z-[1] overflow-hidden"
+      initial={{ x: "-150%" }}
+      animate={{ x: "150%" }}
+      transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+      style={{
+        background:
+          "linear-gradient(105deg, transparent 0%, rgba(255,255,255,0.18) 45%, transparent 100%)",
+        rotate: gleamTilt,
+      }}
+    />
+  );
+}
+
 export function PolaroidCard({
   film,
   enableHover = true,
@@ -108,8 +137,52 @@ export function PolaroidCard({
 }) {
   const polaroidDate = formatPolaroidDate(film.watchedDate);
   const rootRef = useRef<HTMLDivElement>(null);
+  const tiltRef = useRef<HTMLDivElement>(null);
   const [loadPoster, setLoadPoster] = useState(false);
   const [isFlipped, setIsFlipped] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
+  const [gleamSweepKey, setGleamSweepKey] = useState(0);
+
+  const reduceMotion = useReducedMotion();
+
+  const mx = useMotionValue(0);
+  const my = useMotionValue(0);
+  const hoverT = useMotionValue(0);
+  /** Card flip angle (deg); animated — must live on the same node as tilt so back-faces stay correct. */
+  const flipY = useMotionValue(0);
+
+  const tiltMul = reduceMotion ? 0 : 1;
+  const rotateX = useSpring(
+    useTransform(my, (v) => -v * 30 * tiltMul),
+    SPRING
+  );
+  const mouseTiltY = useSpring(
+    useTransform(mx, (v) => v * 30 * tiltMul),
+    SPRING
+  );
+  const rotateY = useTransform([flipY, mouseTiltY], ([f, m]) => {
+    const a = typeof f === "number" ? f : 0;
+    const b = typeof m === "number" ? m : 0;
+    return a + b;
+  });
+  const scale = useSpring(
+    useTransform(hoverT, (t) => 1 + t * (reduceMotion ? 0 : 0.06)),
+    SPRING
+  );
+
+  const shadowY = useSpring(
+    useTransform(hoverT, [0, 1], [8, 20]),
+    SPRING
+  );
+  const shadowBlur = useSpring(
+    useTransform(hoverT, [0, 1], [22, 40]),
+    SPRING
+  );
+  const shadowAlpha = useSpring(
+    useTransform(hoverT, [0, 1], [0.4, 0.5]),
+    SPRING
+  );
+  const boxShadow = useMotionTemplate`0 ${shadowY}px ${shadowBlur}px rgba(0,0,0,${shadowAlpha})`;
 
   const titleLine =
     film.filmYear.length > 0
@@ -138,6 +211,18 @@ export function PolaroidCard({
     return () => observer.disconnect();
   }, [film.image, loadPoster]);
 
+  useEffect(() => {
+    if (reduceMotion) {
+      flipY.set(isFlipped ? -180 : 0);
+      return;
+    }
+    const ctrl = animate(flipY, isFlipped ? -180 : 0, {
+      duration: 0.55,
+      ease: [0.22, 1, 0.36, 1],
+    });
+    return () => ctrl.stop();
+  }, [isFlipped, flipY, reduceMotion]);
+
   const toggleFlip = useCallback(() => {
     if (!enableHover) return;
     setIsFlipped((v) => !v);
@@ -154,23 +239,57 @@ export function PolaroidCard({
     [enableHover, toggleFlip]
   );
 
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!enableHover || reduceMotion) return;
+      const el = tiltRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      mx.set((e.clientX - rect.left) / rect.width - 0.5);
+      my.set((e.clientY - rect.top) / rect.height - 0.5);
+    },
+    [enableHover, reduceMotion, mx, my]
+  );
+
+  const handlePointerLeave = useCallback(() => {
+    mx.set(0);
+    my.set(0);
+    hoverT.set(0);
+    setIsHovered(false);
+  }, [mx, my, hoverT]);
+
+  const handlePointerEnter = useCallback(() => {
+    if (!enableHover) return;
+    setIsHovered(true);
+    if (reduceMotion) return;
+    hoverT.set(1);
+    setGleamSweepKey((k) => k + 1);
+  }, [enableHover, hoverT, reduceMotion]);
+
   const polaroidFont = {
     fontFamily: "var(--font-polaroid), var(--font-sans), sans-serif",
   } as const;
 
-  const hoverLiftClass = enableHover
-    ? "group transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none hover:z-10 hover:scale-105 motion-reduce:hover:scale-100 [transform:translateZ(0)]"
-    : "";
-
-  const frameClass = `polaroid-flip-inner box-border h-full w-full break-inside-avoid border border-[#e0e0e0] bg-white shadow-[0_8px_22px_rgba(0,0,0,0.4)] ${
-    enableHover
-      ? "transition-shadow duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:shadow-[0_14px_32px_rgba(0,0,0,0.55)] motion-reduce:transition-none"
-      : ""
-  }`;
+  const frameClass =
+    "polaroid-flip-inner polaroid-flip-inner--motion box-border h-full w-full break-inside-avoid border border-[#e0e0e0] bg-white";
 
   return (
-    <div className="relative z-0 cursor-default">
-      <div className={hoverLiftClass || undefined}>
+    <div
+      className="relative z-0 cursor-default [perspective:800px]"
+      data-polaroid-card
+    >
+      <motion.div
+        ref={tiltRef}
+        className="h-full w-full origin-center [transform-style:preserve-3d]"
+        style={{
+          scale,
+          zIndex: isHovered && !reduceMotion ? 10 : 0,
+          boxShadow,
+        }}
+        onPointerMove={enableHover ? handlePointerMove : undefined}
+        onPointerLeave={enableHover ? handlePointerLeave : undefined}
+        onPointerEnter={enableHover ? handlePointerEnter : undefined}
+      >
         <div
           ref={rootRef}
           className={`polaroid-flip-scene shrink-0 ${
@@ -190,12 +309,17 @@ export function PolaroidCard({
           }}
           onKeyDown={onKeyDown}
         >
-          <div
-            className={`${frameClass} ${isFlipped ? "is-flipped" : ""}`}
+          <motion.div
+            className={frameClass}
+            style={{
+              rotateX,
+              rotateY,
+              transformStyle: "preserve-3d",
+            }}
           >
             <div className="polaroid-flip-face polaroid-flip-face--front flex flex-col">
             <div
-              className="w-full shrink-0 overflow-hidden bg-neutral-200"
+              className="relative w-full shrink-0 overflow-hidden bg-neutral-200"
               style={{ height: POLAROID_IMAGE_H }}
             >
               {film.image && loadPoster ? (
@@ -204,10 +328,17 @@ export function PolaroidCard({
                   src={film.image}
                   alt=""
                   draggable={false}
-                  className="h-full w-full object-cover"
+                  className="relative z-0 h-full w-full object-cover"
                   decoding="async"
                 />
               ) : null}
+              {enableHover &&
+                film.image &&
+                loadPoster &&
+                isHovered &&
+                !reduceMotion && (
+                  <PosterGleam key={gleamSweepKey} mx={mx} />
+                )}
             </div>
             <div
               className="flex w-full shrink-0 items-center justify-center bg-white px-2.5 py-1.5"
@@ -233,10 +364,9 @@ export function PolaroidCard({
               <RatingStars rating={film.memberRating} />
             </div>
             </div>
-          </div>
+          </motion.div>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }
-

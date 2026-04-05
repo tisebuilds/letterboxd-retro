@@ -258,7 +258,6 @@ body {
 
 /* Polaroid click-to-flip (3D); pivot at card center; entire frame + faces rotate together. */
 .polaroid-flip-scene {
-  perspective: 880px;
   perspective-origin: center center;
   transform-style: preserve-3d;
 }
@@ -271,6 +270,11 @@ body {
   transform-origin: center center;
   transform: translateZ(0);
   transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Framer-driven flip + tilt: avoid CSS transition fighting springs / motion. */
+.polaroid-flip-inner.polaroid-flip-inner--motion {
+  transition: none;
 }
 
 /* Negative Y: horizontal flip around vertical midline (left-to-right sweep). */
