@@ -21,16 +21,32 @@ const CLICK_THRESHOLD = 5;
 /** Marks the polaroid root so the pan canvas can ignore pointerdown (see capture listener). */
 const POLAROID_CARD_SELECTOR = "[data-polaroid-card]";
 
-const NUM_COLS = 5;
-const COL_SPACING = CARD_W + 48;
-const ROW_SPACING = CARD_H + 48;
+/** Gap between polaroid frames (horizontal and vertical grid pitch beyond card size). */
+const GRID_GAP_PX = 72;
+
+const COL_SPACING = CARD_W + GRID_GAP_PX;
+const ROW_SPACING = CARD_H + GRID_GAP_PX;
+
+/** Min/max columns; card size is fixed — only column count changes with viewport width. */
+const MIN_COLS = 3;
+const MAX_COLS = 12;
+const DEFAULT_COLS = 5;
 
 const phi = 1.618;
-const COL_OFFSETS = Array.from({ length: NUM_COLS }, (_, i) => {
-  return (
-    ((i * phi * ROW_SPACING * 1.5) % (ROW_SPACING * 3)) - ROW_SPACING * 1.5
-  );
-});
+
+function columnCountFromWidth(vw: number): number {
+  if (vw < 1) return DEFAULT_COLS;
+  const n = Math.floor(vw / COL_SPACING);
+  return Math.min(MAX_COLS, Math.max(MIN_COLS, n));
+}
+
+function colOffsetsFor(numCols: number): number[] {
+  return Array.from({ length: numCols }, (_, i) => {
+    return (
+      ((i * phi * ROW_SPACING * 1.5) % (ROW_SPACING * 3)) - ROW_SPACING * 1.5
+    );
+  });
+}
 
 /** Spacebar burst: must match `polaroid-burst-at-camera` duration in globals.css. */
 const BURST_ANIM_MS = 900;
@@ -84,7 +100,7 @@ function burstOutwardOffsetPx(
   return { x: rdx, y: rdy };
 }
 
-function computeGridLayout(films: Film[]) {
+function computeGridLayout(films: Film[], numCols: number) {
   const n = films.length;
   if (n === 0) {
     return {
@@ -93,16 +109,23 @@ function computeGridLayout(films: Film[]) {
       bases: [] as { baseX: number; baseY: number }[],
     };
   }
-  const numRows = Math.ceil(n / NUM_COLS);
-  const TOTAL_W = NUM_COLS * COL_SPACING;
+  const cols = Math.max(1, numCols);
+  const colOffsets = colOffsetsFor(cols);
+  const numRows = Math.ceil(n / cols);
+  const TOTAL_W = cols * COL_SPACING;
   const TOTAL_H = numRows * ROW_SPACING;
   const bases = films.map((_, i) => {
-    const col = i % NUM_COLS;
-    const row = Math.floor(i / NUM_COLS);
-    const baseX = col * COL_SPACING - TOTAL_W / 2 + COL_SPACING / 2;
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    // Center the card cluster horizontally (symmetric bbox around origin).
+    const baseX =
+      col * COL_SPACING -
+      TOTAL_W / 2 +
+      COL_SPACING / 2 -
+      CARD_W / 2;
     const baseY =
       row * ROW_SPACING +
-      COL_OFFSETS[col]! -
+      colOffsets[col]! -
       TOTAL_H / 2 +
       ROW_SPACING / 2;
     return { baseX, baseY };
@@ -117,9 +140,11 @@ type TileRef = {
 };
 
 export function HomePolaroidGrid({ films }: { films: Film[] }) {
+  const [columnCount, setColumnCount] = useState(DEFAULT_COLS);
+
   const { TOTAL_W, TOTAL_H, bases } = useMemo(
-    () => computeGridLayout(films),
-    [films]
+    () => computeGridLayout(films, columnCount),
+    [films, columnCount]
   );
 
   const pos = useRef({ x: 0, y: 0 });
@@ -235,7 +260,11 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
   const syncViewportSize = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    viewportSize.current = { w: el.clientWidth, h: el.clientHeight };
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    viewportSize.current = { w, h };
+    const nextCols = columnCountFromWidth(w);
+    setColumnCount((prev) => (prev === nextCols ? prev : nextCols));
     updateTiles.current();
   }, []);
 
@@ -307,7 +336,7 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
       tile.burstEl.style.setProperty("--burst-out-x", `${x}px`);
       tile.burstEl.style.setProperty("--burst-out-y", `${y}px`);
     }
-  }, [burstActive, films, TOTAL_W, TOTAL_H]);
+  }, [burstActive, columnCount, films, TOTAL_W, TOTAL_H]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -476,11 +505,11 @@ export function HomePolaroidGrid({ films }: { films: Film[] }) {
         <div className="absolute inset-x-0 bottom-0 h-[min(22vh,200px)] bg-gradient-to-t from-[#111] to-transparent" />
         <div
           className="absolute inset-y-0 left-0 bg-gradient-to-r from-[#111] to-transparent"
-          style={{ width: `min(18vw, ${CARD_W}px)` }}
+          style={{ width: "min(8vw, 64px)" }}
         />
         <div
           className="absolute inset-y-0 right-0 bg-gradient-to-l from-[#111] to-transparent"
-          style={{ width: `min(18vw, ${CARD_W}px)` }}
+          style={{ width: "min(8vw, 64px)" }}
         />
       </div>
 
